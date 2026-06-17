@@ -226,6 +226,65 @@ public:
     }
 };
 
+// vvvvvvvvvv  v=view, h=hud, l=mlist, m=msg
+// vvvvvvvvvv  Portrait / narrow terminals: the HUD stacks BELOW the map
+// vvvvvvvvvv  instead of sitting to its right, so the whole thing fits in
+// hhhhhhllll  ~HUD_WIDTH columns rather than the ~80 the wide layout needs.
+// mmmmmmmmmm  (iOS console port — selected when too narrow for _inline_layout.)
+class _stacked_layout : public _layout
+{
+public:
+    _stacked_layout(coord_def termsz_, coord_def hudsz_)
+        : _layout(termsz_, hudsz_)
+    { valid = _init(); }
+
+    bool _init()
+    {
+        // x: view, hud and msg all span the full width. We need at least
+        // enough columns for the HUD row to fit.
+        if (termsz.x < hudsz.x)
+            return false;
+        _increment(viewsz.x, termsz.x - viewsz.x, Options.view_max_width);
+        if (viewsz.x > termsz.x)
+            viewsz.x = termsz.x;
+        if ((viewsz.x % 2) != 1)
+            --viewsz.x;
+        msgsz.x = termsz.x;
+
+        // y: hud is a fixed block; messages keep their minimum; the map view
+        // takes whatever is left (and must still meet its own minimum).
+        const int reserved = hudsz.y + msgsz.y;     // msgsz.y starts at msg_min_height
+        if (termsz.y - reserved < viewsz.y)
+            return false;
+        _increment(viewsz.y, termsz.y - reserved - viewsz.y, Options.view_max_height);
+        if ((viewsz.y % 2) != 1)
+            --viewsz.y;
+        _increment(msgsz.y, termsz.y - viewsz.y - hudsz.y - msgsz.y, MSG_MAX_HEIGHT);
+
+        // Positions: map on top, HUD below it, messages at the bottom.
+        viewp = termp;
+        hudp  = termp + coord_def(0, viewsz.y);
+        msgp  = termp + coord_def(0, viewsz.y + hudsz.y);
+
+        // Tuck the monster list to the right of the HUD if there is room,
+        // otherwise drop it (zero-size, but still a valid position).
+        if (termsz.x - hudsz.x >= MLIST_MIN_WIDTH + MLIST_GUTTER)
+        {
+            mlistp = hudp + coord_def(hudsz.x + MLIST_GUTTER, 0);
+            mlistsz.x = min(termsz.x - hudsz.x - MLIST_GUTTER, MLIST_MAX_WIDTH);
+            mlistsz.y = hudsz.y;
+        }
+        else
+        {
+            mlistsz = coord_def(0, 0);
+            mlistp  = hudp;
+        }
+
+        _assert_validity();
+        return true;
+    }
+};
+
 //////////////////////////////////////////////////////////////////////////////
 // crawl_view_buffer
 
@@ -385,16 +444,34 @@ void crawl_view_geometry::init_geometry()
 {
     termsz = coord_def(get_number_of_cols(), get_number_of_lines());
 
+    hudsz  = coord_def(HUD_WIDTH, HUD_HEIGHT);
+
     // currently, webtiles has weird interactions with this logic (I think
     // because of extra resize calls). But this is basically safe because
     // dgamelaunch wraps terminal size and prevents smallterm.
 #ifndef USE_TILE_LOCAL
-    const bool smallterm = termsz.x < MIN_COLS || termsz.y < MIN_LINES;
-    crawl_state.smallterm = smallterm;
-    termsz.x = max(termsz.x, MIN_COLS);
-    termsz.y = max(termsz.y, MIN_LINES);
+    // Two layout families: the standard wide layout (HUD to the right of the
+    // map, needs >= MIN_COLS) and the narrow/portrait "stacked" layout (HUD
+    // below the map, needs only ~HUD_WIDTH columns). Pick stacked when the
+    // grid is too narrow for the wide layout but still tall/wide enough to
+    // stack; only declare smallterm when neither layout can fit.
+    const int stack_min_cols  = HUD_WIDTH;
+    const int stack_min_lines = VIEW_MIN_HEIGHT + HUD_HEIGHT + Options.msg_min_height;
+    const bool fits_wide  = termsz.x >= MIN_COLS && termsz.y >= MIN_LINES;
+    const bool fits_stack = termsz.x >= stack_min_cols && termsz.y >= stack_min_lines;
+    const bool use_stack  = !fits_wide && fits_stack;
+    crawl_state.smallterm = !fits_wide && !fits_stack;
+    if (use_stack)
+    {
+        termsz.x = max(termsz.x, stack_min_cols);
+        termsz.y = max(termsz.y, stack_min_lines);
+    }
+    else
+    {
+        termsz.x = max(termsz.x, MIN_COLS);
+        termsz.y = max(termsz.y, MIN_LINES);
+    }
 #endif
-    hudsz  = coord_def(HUD_WIDTH, HUD_HEIGHT);
 
     const _inline_layout lay_inline(termsz, hudsz);
     const _mlist_col_layout lay_mlist(termsz, hudsz);
@@ -406,6 +483,9 @@ void crawl_view_geometry::init_geometry()
         winner = &lay_mlist;
     }
 #ifndef USE_TILE_LOCAL
+    const _stacked_layout lay_stack(termsz, hudsz);
+    if (use_stack && lay_stack.valid)
+        winner = &lay_stack;
     // I don't know why this crashes on local tiles
     ASSERT(winner->valid);
 #endif
