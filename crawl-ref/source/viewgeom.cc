@@ -28,6 +28,12 @@
 #define HUD_MIN_GUTTER 2
 #define HUD_MAX_GUTTER 4
 
+// Set by the iOS layer (libios.mm): when true the grid is a wide ~80-col
+// virtual terminal (so DCSS menus render fully and the view scrolls), but the
+// in-game panes should stack (HUD below the map) and stay within the visible
+// width rather than spreading across the whole scrollable grid.
+extern "C" bool g_ios_force_stacked;
+
 // Helper for layouts. Tries to increment lvalue without overflowing it.
 static void _increment(int& lvalue, int delta, int max_value)
 {
@@ -240,16 +246,19 @@ public:
 
     bool _init()
     {
-        // x: view, hud and msg all span the full width. We need at least
-        // enough columns for the HUD row to fit.
+        // x: view, hud and msg span the visible width. On iOS the grid is a
+        // wide scrollable terminal, so cap the game panes to ~HUD_WIDTH (the
+        // readable on-screen width) instead of the whole grid; menus, which
+        // aren't laid out here, still use the full width and scroll.
         if (termsz.x < hudsz.x)
             return false;
+        const int cap = g_ios_force_stacked ? (int) HUD_WIDTH : termsz.x;
         _increment(viewsz.x, termsz.x - viewsz.x, Options.view_max_width);
-        if (viewsz.x > termsz.x)
-            viewsz.x = termsz.x;
+        if (viewsz.x > cap)
+            viewsz.x = cap;
         if ((viewsz.x % 2) != 1)
             --viewsz.x;
-        msgsz.x = termsz.x;
+        msgsz.x = min(termsz.x, cap);
 
         // y: hud is a fixed block; messages keep their minimum; the map view
         // takes whatever is left (and must still meet its own minimum).
@@ -266,12 +275,12 @@ public:
         hudp  = termp + coord_def(0, viewsz.y);
         msgp  = termp + coord_def(0, viewsz.y + hudsz.y);
 
-        // Tuck the monster list to the right of the HUD if there is room,
-        // otherwise drop it (zero-size, but still a valid position).
-        if (termsz.x - hudsz.x >= MLIST_MIN_WIDTH + MLIST_GUTTER)
+        // Tuck the monster list to the right of the HUD if there is room
+        // within the visible width, otherwise drop it (zero-size, valid pos).
+        if (cap - hudsz.x >= MLIST_MIN_WIDTH + MLIST_GUTTER)
         {
             mlistp = hudp + coord_def(hudsz.x + MLIST_GUTTER, 0);
-            mlistsz.x = min(termsz.x - hudsz.x - MLIST_GUTTER, MLIST_MAX_WIDTH);
+            mlistsz.x = min(cap - hudsz.x - MLIST_GUTTER, MLIST_MAX_WIDTH);
             mlistsz.y = hudsz.y;
         }
         else
@@ -459,7 +468,8 @@ void crawl_view_geometry::init_geometry()
     const int stack_min_lines = VIEW_MIN_HEIGHT + HUD_HEIGHT + Options.msg_min_height;
     const bool fits_wide  = termsz.x >= MIN_COLS && termsz.y >= MIN_LINES;
     const bool fits_stack = termsz.x >= stack_min_cols && termsz.y >= stack_min_lines;
-    const bool use_stack  = !fits_wide && fits_stack;
+    // iOS portrait forces the stacked layout even on a wide (scrollable) grid.
+    const bool use_stack  = (g_ios_force_stacked || !fits_wide) && fits_stack;
     crawl_state.smallterm = !fits_wide && !fits_stack;
     if (use_stack)
     {
