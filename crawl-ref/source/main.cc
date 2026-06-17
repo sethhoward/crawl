@@ -344,11 +344,18 @@ int main(int argc, char *argv[])
         term_colours[col.colour_index] = col.colour_def;
 #endif
 
+#if defined(DCSS_IOS)
+    // iOS: never fall through to end()/exit(). Quitting the menu or a game
+    // unwinds back here (see end() under DCSS_IOS) and we re-enter the menu.
+    for (;;)
+        _launch_game_loop();
+#else
     _launch_game_loop();
     if (crawl_state.last_game_exit.message.size())
         end(0, false, "%s\n", crawl_state.last_game_exit.message.c_str());
     else
         end(0);
+#endif
 
     return 0;
 }

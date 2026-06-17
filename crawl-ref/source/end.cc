@@ -145,6 +145,14 @@ bool CrawlIsCrashing = false;
 
 NORETURN void end(int exit_code, bool print_error, const char *format, ...)
 {
+#if defined(DCSS_IOS)
+    // iOS apps must not terminate themselves. A clean exit (quitting the
+    // startup menu, the in-game quit/save, etc.) is turned into a menu abort so
+    // the game loop unwinds and re-shows the menu instead of killing the app.
+    // Crashes / error exits (exit_code != 0) still fall through to exit().
+    if (exit_code == 0 && !crawl_state.seen_hups)
+        game_ended(game_exit::abort);
+#endif
     disable_other_crashes();
 
     // Let "error" go out of scope for valgrind's sake.
